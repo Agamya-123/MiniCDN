@@ -1,20 +1,20 @@
-# 🌐 MiniCDN — Distributed Content Delivery Network Simulator
+# MiniCDN — Distributed Content Delivery Network Simulator
 
-MiniCDN is a simplified, multi-process Content Delivery Network (CDN) simulator built with **Node.js**, **Express**, **SQLite**, and **React**. It demonstrates core distributed systems concepts including **geographic edge routing**, **cache hit/miss performance optimization**, **JWT authentication**, and **pull/push cache synchronization**.
-
----
-
-## ✨ Features
-
-- 📍 **Geo-Distance Edge Routing (Haversine Formula)**: Calculates great-circle distances to dynamically route client requests to the nearest edge server.
-- ⚡ **Edge Cache Invalidation & Acceleration**: Demonstrates a **10x speedup (80ms MISS vs 8ms HIT)** on cached payloads.
-- 🔄 **Dynamic Routing Strategies**: Switch between **Haversine Geo-Distance** and **Ping Latency** routing, or test manual forced overrides.
-- 🔐 **JWT Authentication & RBAC**: Admin role for master file uploads and global edge cache purges; User role for downloading and simulator testing.
-- 🗺️ **Interactive Dashboard**: Real-time dark-mode UI with a Leaflet.js interactive map, client-to-edge connection arcs, and stream log analytics.
+MiniCDN is a multi-process Content Delivery Network (CDN) simulator implemented in **Node.js**, **Express**, **SQLite**, and **React**. The application demonstrates core distributed systems engineering concepts, including geographic edge routing, cache hit/miss optimization, JWT-based role authentication, and pull/push cache synchronization.
 
 ---
 
-## 🏗️ System Architecture
+## Technical Overview
+
+- **Geographic Distance Routing (Haversine Formula)**: Calculates great-circle distances across spherical Earth coordinates to dynamically route incoming client requests to the nearest edge server node.
+- **Latency-Based Routing Mode**: Measures real-time network response latencies across all active edge nodes to route traffic dynamically to the lowest-latency edge.
+- **Edge Cache Optimization**: Implements lazy-pull edge caching with automatic origin fallback, reducing payload delivery times from 80ms on cache MISS to 8ms on cache HIT (10x performance improvement).
+- **Proactive Push Synchronization**: Enables origin-driven cache invalidation to broadcast purge events to edge nodes upon master file modifications.
+- **Authentication & Access Control**: Enforces Role-Based Access Control (RBAC) via JSON Web Tokens (JWT) and bcrypt password hashing.
+
+---
+
+## System Architecture
 
 ```
                              ┌────────────────────┐
@@ -46,73 +46,108 @@ MiniCDN is a simplified, multi-process Content Delivery Network (CDN) simulator 
 
 ---
 
-## 🛠️ Tech Stack
+## Technology Stack
 
-- **Backend**: Node.js, Express
-- **Database**: SQLite (`better-sqlite3`)
-- **Frontend**: React (Vite), Leaflet.js, Lucide Icons, Axios
-- **Auth**: JSON Web Tokens (JWT), bcryptjs
+- **Backend Runtime**: Node.js, Express.js
+- **Database Layer**: SQLite (`better-sqlite3`)
+- **Frontend Framework**: React 18, Vite, Leaflet.js, Lucide Icons, Axios
+- **Security & Authentication**: JSON Web Tokens (JWT), bcryptjs
 
 ---
 
-## 🚀 Quick Start & Installation
+## API Specification
 
-### 1. Clone the repository
+### Authentication
+- `POST /api/auth/signup` — Registers a new user account and returns a JWT token.
+- `POST /api/auth/login` — Authenticates user credentials and returns a JWT token.
+- `GET /api/auth/me` — Returns authenticated user profile details.
+
+### Content Delivery & Routing
+- `GET /api/file/:filename` — Main CDN proxy endpoint. Accepts optional query parameters:
+  - `lat` (float): Client latitude coordinate.
+  - `lng` (float): Client longitude coordinate.
+  - `mode` (`geo` | `latency`): Routing strategy algorithm.
+  - `forceEdge` (string): Manual edge server override.
+
+### File Management & Analytics
+- `POST /api/origin/upload` — Uploads master file payload to Origin Server (Admin privileges required). Accepts optional `pushSync=true` query parameter.
+- `GET /api/files` — Retrieves catalog of files stored on Origin Server.
+- `GET /api/edges` — Queries operational status and cached entries across all edge nodes.
+- `GET /api/logs` — Retrieves request stream logs and network performance metrics.
+- `POST /api/edges/purge` — Dispatches cache purge commands to edge nodes (Admin privileges required).
+
+---
+
+## Installation & Deployment
+
+### Prerequisites
+- Node.js (v18 or higher)
+- npm (v9 or higher)
+
+### Setup Instructions
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/Agamya-123/MiniCDN.git
+   cd MiniCDN
+   ```
+
+2. Install root backend dependencies:
+   ```bash
+   npm install
+   ```
+
+3. Install frontend dependencies:
+   ```bash
+   cd frontend
+   npm install
+   cd ..
+   ```
+
+---
+
+## Running Services
+
+To run the complete network, execute each component service in separate terminal windows:
+
 ```bash
-git clone https://github.com/Agamya-123/MiniCDN.git
-cd MiniCDN
-```
-
-### 2. Install dependencies
-```bash
-# Install root backend dependencies
-npm install
-
-# Install frontend dependencies
-cd frontend
-npm install
-cd ..
-```
-
-### 3. Start the services
-
-**Start Origin Server (Port 4001):**
-```bash
+# 1. Start Origin Server (Port 4001)
 npm run start:origin
-```
 
-**Start Edge Servers (Ports 4002, 4003, 4004):**
-```bash
-npm run start:edge:mumbai
-npm run start:edge:bangalore
-npm run start:edge:lucknow
-```
+# 2. Start Regional Edge Servers
+npm run start:edge:mumbai     # Port 4002
+npm run start:edge:bangalore  # Port 4003
+npm run start:edge:lucknow    # Port 4004
 
-**Start Router / Gateway (Port 4000):**
-```bash
+# 3. Start Router Gateway (Port 4000)
 npm run start:router
-```
 
-**Start Frontend Dashboard (Port 5173):**
-```bash
+# 4. Start React Frontend Dashboard (Port 5173)
 cd frontend
 npm run dev
 ```
 
-Open your browser at **`http://localhost:5173`**.
+Access the interactive web dashboard at **`http://localhost:5173`**.
 
 ---
 
-## 🔑 Demo Credentials
+## Demo Accounts
 
-- **Admin Account**: `admin@minicdn.com` / `admin123`
-- **User Account**: `user@minicdn.com` / `user123`
+- **Administrator**: `admin@minicdn.com` / `admin123`
+- **Standard User**: `user@minicdn.com` / `user123`
 
 ---
 
-## 🧪 Automated Testing
+## Automated Verification
 
-Run the automated end-to-end verification suite:
+Execute the automated integration test suite to verify end-to-end routing, cache hits/misses, and latency benchmarks:
+
 ```bash
 node scripts/test_cdn.js
 ```
+
+---
+
+## License
+
+This project is licensed under the terms of the [MIT License](LICENSE).

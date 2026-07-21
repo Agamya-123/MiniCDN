@@ -54,6 +54,11 @@ const RATE_LIMIT_MAX = 30; // Max 30 requests per minute
 const WINDOW_MS = 60 * 1000;
 
 function rateLimiterWAF(req, res, next) {
+  // Exclude Auth, SSE Stream, Logs, and Dashboard status APIs from rate limiting
+  if (req.path.startsWith('/api/auth') || req.path === '/api/stream' || req.path === '/api/logs' || req.path === '/api/edges') {
+    return next();
+  }
+
   const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
   const now = Date.now();
 

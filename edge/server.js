@@ -102,7 +102,12 @@ app.get('/edge/file/:filename', async (req, res) => {
 
   // Check TTL Expiration
   if (cacheRecord && fs.existsSync(cachedFilePath)) {
-    const cachedTime = new Date(cacheRecord.cached_at).getTime();
+    const rawDateStr = String(cacheRecord.cached_at);
+    const cachedStr = rawDateStr.includes('T') || rawDateStr.endsWith('Z')
+      ? rawDateStr
+      : rawDateStr.replace(' ', 'T') + 'Z';
+
+    const cachedTime = new Date(cachedStr).getTime();
     const now = Date.now();
     const ageMinutes = (now - cachedTime) / (1000 * 60);
 
@@ -117,12 +122,13 @@ app.get('/edge/file/:filename', async (req, res) => {
   // CACHE HIT
   if (cacheRecord && fs.existsSync(cachedFilePath)) {
     try {
+      const nowIso = new Date().toISOString();
       db.prepare(`
         UPDATE cache_entries
         SET hit_count = hit_count + 1,
-            last_accessed = CURRENT_TIMESTAMP
+            last_accessed = ?
         WHERE edge_id = ? AND filename = ?
-      `).run(edgeDbRecord.id, filename);
+      `).run(nowIso, edgeDbRecord.id, filename);
 
       res.setHeader('X-Cache-Status', 'HIT');
       return processAndSendFile(cachedFilePath, req.query, res);
@@ -152,16 +158,17 @@ app.get('/edge/file/:filename', async (req, res) => {
     originResponse.data.pipe(writer);
 
     writer.on('finish', () => {
-      // Record cache entry in DB with timestamps
+      // Record cache entry in DB with ISO UTC timestamps
       try {
+        const nowIso = new Date().toISOString();
         db.prepare(`
           INSERT INTO cache_entries (edge_id, filename, cached_at, last_accessed, hit_count)
-          VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+          VALUES (?, ?, ?, ?, 1)
           ON CONFLICT(edge_id, filename) DO UPDATE SET
-            cached_at = CURRENT_TIMESTAMP,
-            last_accessed = CURRENT_TIMESTAMP,
+            cached_at = excluded.cached_at,
+            last_accessed = excluded.last_accessed,
             hit_count = hit_count + 1
-        `).run(edgeDbRecord.id, filename);
+        `).run(edgeDbRecord.id, filename, nowIso, nowIso);
       } catch (dbErr) {
         console.error(`[${EDGE_NAME}] Cache entry record error:`, dbErr);
       }

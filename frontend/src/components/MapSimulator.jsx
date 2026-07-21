@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { Download, RefreshCw, Zap, MapPin, Gauge, ShieldCheck, FileText, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Download, RefreshCw, Zap, MapPin, Gauge, ShieldCheck, FileText, CheckCircle2, AlertCircle, Sliders, Radio } from 'lucide-react';
 import axios from 'axios';
 
 // Custom Leaflet Icons using SVGs
@@ -51,10 +51,16 @@ export default function MapSimulator() {
   const [selectedFile, setSelectedFile] = useState('');
   const [forceEdge, setForceEdge] = useState('');
   const [routingMode, setRoutingMode] = useState('geo');
-  
+
+  // Image Optimization Controls
+  const [imgWidth, setImgWidth] = useState('');
+  const [imgFormat, setImgFormat] = useState('');
+
   const [loading, setLoading] = useState(false);
+  const [rateLimitError, setRateLimitError] = useState('');
   const [lastResult, setLastResult] = useState(null);
   const [activeConnectionLine, setActiveConnectionLine] = useState(null);
+  const [sseConnected, setSseConnected] = useState(false);
 
   // Fetch Edges & Files catalog
   const fetchData = async () => {
@@ -76,6 +82,30 @@ export default function MapSimulator() {
 
   useEffect(() => {
     fetchData();
+
+    // Connect to Server-Sent Events stream for real-time updates
+    const eventSource = new EventSource('/api/stream');
+
+    eventSource.onopen = () => {
+      setSseConnected(true);
+    };
+
+    eventSource.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'REQUEST_LOGGED' || data.type === 'CACHE_PURGED' || data.type === 'FILE_UPLOADED') {
+          fetchData();
+        }
+      } catch (err) {}
+    };
+
+    eventSource.onerror = () => {
+      setSseConnected(false);
+    };
+
+    return () => {
+      eventSource.close();
+    };
   }, []);
 
   const handlePresetChange = (presetName) => {
@@ -89,6 +119,7 @@ export default function MapSimulator() {
   const handleRequestFile = async () => {
     if (!selectedFile) return;
     setLoading(true);
+    setRateLimitError('');
     setLastResult(null);
     setActiveConnectionLine(null);
 
@@ -100,6 +131,8 @@ export default function MapSimulator() {
         mode: routingMode
       });
       if (forceEdge) params.append('forceEdge', forceEdge);
+      if (imgWidth) params.append('width', imgWidth);
+      if (imgFormat) params.append('format', imgFormat);
 
       const res = await axios.get(`/api/file/${selectedFile}?${params.toString()}`, {
         responseType: 'blob'
@@ -113,6 +146,8 @@ export default function MapSimulator() {
       const serverLatency = headers['x-cdn-response-time-ms'] || clientLatency;
       const distanceKm = headers['x-cdn-edge-distance-km'] || '?';
       const modeUsed = headers['x-cdn-routing-mode'] || routingMode;
+      const processedOnTheFly = headers['x-cdn-processed-on-the-fly'] === 'true';
+      const lruEvictedFile = headers['x-cdn-lru-evicted'] || null;
 
       // Find matching edge server position for map arc
       const matchedEdge = edges.find(e => e.name.toLowerCase() === edgeName.toLowerCase() || edgeName.includes(e.name));
@@ -135,18 +170,22 @@ export default function MapSimulator() {
         clientLatency,
         distanceKm,
         modeUsed,
+        processedOnTheFly,
+        lruEvictedFile,
         objectUrl,
         isImage,
         sizeBytes: blob.size,
         filename: selectedFile
       });
 
-      // Refresh edge status for updated cache counts
       fetchData();
 
     } catch (err) {
-      console.error('CDN Proxy Request Error:', err);
-      alert('Failed to request file via CDN. Ensure origin & edge servers are online.');
+      if (err.response && err.response.status === 429) {
+        setRateLimitError('WAF Protection Activated: Rate limit exceeded (Max 30 req/min)');
+      } else {
+        alert('Failed to request file via CDN. Ensure origin & edge servers are online.');
+      }
     } finally {
       setLoading(false);
     }
@@ -157,9 +196,20 @@ export default function MapSimulator() {
       
       {/* Control Panel (Left column) */}
       <div className="glass-panel" style={{ flex: '1 1 340px', padding: '24px', minWidth: '300px' }}>
-        <h2 style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Zap size={20} color="var(--primary)" /> CDN Simulator Controls
-        </h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <h2 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Zap size={20} color="var(--primary)" /> CDN Simulator Controls
+          </h2>
+          <span className={`badge ${sseConnected ? 'badge-hit' : 'badge-miss'}`} title="Real-Time Server-Sent Events Stream">
+            <Radio size={12} className={sseConnected ? 'animate-pulse' : ''} /> {sseConnected ? 'SSE REALTIME' : 'POLLING'}
+          </span>
+        </div>
+
+        {rateLimitError && (
+          <div style={{ background: 'rgba(244, 63, 94, 0.15)', border: '1px solid rgba(244, 63, 94, 0.3)', color: '#f43f5e', padding: '10px 14px', borderRadius: '10px', fontSize: '0.85rem', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <AlertCircle size={16} /> {rateLimitError}
+          </div>
+        )}
 
         {/* File Selection */}
         <div className="form-group">
@@ -172,6 +222,35 @@ export default function MapSimulator() {
               </option>
             ))}
           </select>
+        </div>
+
+        {/* Dynamic Image Optimization Options */}
+        <div style={{ background: 'rgba(15, 23, 42, 0.5)', padding: '12px', borderRadius: '10px', border: '1px solid var(--border-color)', marginBottom: '16px' }}>
+          <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+            <Sliders size={14} /> Edge Image Processing (Sharp)
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+            <div className="form-group" style={{ marginBottom: 0, minWidth: 0 }}>
+              <label className="form-label">Resize Width</label>
+              <select className="form-select" style={{ padding: '6px 10px', fontSize: '0.85rem' }} value={imgWidth} onChange={(e) => setImgWidth(e.target.value)}>
+                <option value="">Original</option>
+                <option value="200">200 px</option>
+                <option value="400">400 px</option>
+                <option value="800">800 px</option>
+              </select>
+            </div>
+
+            <div className="form-group" style={{ marginBottom: 0, minWidth: 0 }}>
+              <label className="form-label">Target Format</label>
+              <select className="form-select" style={{ padding: '6px 10px', fontSize: '0.85rem' }} value={imgFormat} onChange={(e) => setImgFormat(e.target.value)}>
+                <option value="">Original</option>
+                <option value="webp">WebP (Compressed)</option>
+                <option value="jpg">JPEG</option>
+                <option value="png">PNG</option>
+              </select>
+            </div>
+          </div>
         </div>
 
         {/* Client Geolocation Preset */}
@@ -287,7 +366,8 @@ export default function MapSimulator() {
                 <Popup>
                   <strong>Edge Server: {edge.name}</strong><br />
                   Port: {edge.base_url.split(':').pop()}<br />
-                  Cached Files: {edge.cache_count || 0}<br />
+                  Cache Usage: {edge.cache_count || 0} / {edge.max_capacity || 5} files<br />
+                  TTL Expiry: {edge.ttl_minutes || 10} mins<br />
                   Status: <span style={{ color: edge.status === 'online' ? '#34d399' : '#f43f5e' }}>{edge.status}</span>
                 </Popup>
               </Marker>
@@ -313,6 +393,11 @@ export default function MapSimulator() {
               </div>
 
               <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                {lastResult.processedOnTheFly && (
+                  <span className="badge badge-purple" style={{ fontSize: '0.9rem', padding: '6px 14px' }}>
+                    <Sliders size={16} /> SHARP TRANSFORMED
+                  </span>
+                )}
                 <span className={`badge ${lastResult.cacheStatus === 'HIT' ? 'badge-hit' : 'badge-miss'}`} style={{ fontSize: '0.9rem', padding: '6px 14px' }}>
                   {lastResult.cacheStatus === 'HIT' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
                   CACHE {lastResult.cacheStatus}
@@ -322,6 +407,12 @@ export default function MapSimulator() {
                 </span>
               </div>
             </div>
+
+            {lastResult.lruEvictedFile && (
+              <div style={{ background: 'rgba(251, 191, 36, 0.15)', border: '1px solid rgba(251, 191, 36, 0.3)', color: '#fbbf24', padding: '10px 14px', borderRadius: '10px', fontSize: '0.85rem', marginBottom: '16px' }}>
+                <strong>⚠️ LRU Cache Eviction:</strong> Storage full at {lastResult.edgeName}. Automatically evicted least recently used file: <code>{lastResult.lruEvictedFile}</code>
+              </div>
+            )}
 
             {/* Metric Grid */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '12px', marginBottom: '20px' }}>

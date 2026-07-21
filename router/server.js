@@ -18,6 +18,72 @@ app.use(cors());
 app.use(express.json());
 
 // ----------------------------------------------------
+// REAL-TIME SERVER-SENT EVENTS (SSE) ENGINE
+// ----------------------------------------------------
+let sseClients = [];
+
+app.get('/api/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const clientId = Date.now();
+  const newClient = { id: clientId, res };
+  sseClients.push(newClient);
+
+  // Send initial connection event
+  res.write(`data: ${JSON.stringify({ type: 'CONNECTED', message: 'SSE Stream Connected' })}\n\n`);
+
+  req.on('close', () => {
+    sseClients = sseClients.filter(c => c.id !== clientId);
+  });
+});
+
+function broadcastSSE(data) {
+  sseClients.forEach(client => {
+    client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+  });
+}
+
+// ----------------------------------------------------
+// WAF / IP RATE LIMITING MIDDLEWARE (Token Bucket)
+// ----------------------------------------------------
+const ipRateMap = new Map();
+const RATE_LIMIT_MAX = 30; // Max 30 requests per minute
+const WINDOW_MS = 60 * 1000;
+
+function rateLimiterWAF(req, res, next) {
+  const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+  const now = Date.now();
+
+  let record = ipRateMap.get(clientIp);
+  if (!record || (now - record.startTime) > WINDOW_MS) {
+    record = { count: 1, startTime: now };
+  } else {
+    record.count++;
+  }
+  ipRateMap.set(clientIp, record);
+
+  const remaining = Math.max(0, RATE_LIMIT_MAX - record.count);
+  res.setHeader('X-RateLimit-Limit', RATE_LIMIT_MAX);
+  res.setHeader('X-RateLimit-Remaining', remaining);
+
+  if (record.count > RATE_LIMIT_MAX) {
+    res.setHeader('Retry-After', 60);
+    return res.status(429).json({
+      error: 'WAF Rate Limit Exceeded (HTTP 429)',
+      message: `Too many requests from IP ${clientIp}. Limit is ${RATE_LIMIT_MAX} requests per minute.`
+    });
+  }
+
+  next();
+}
+
+// Apply WAF Rate Limiter globally to all API routes
+app.use(rateLimiterWAF);
+
+// ----------------------------------------------------
 // AUTH ENDPOINTS
 // ----------------------------------------------------
 app.post('/api/auth/signup', (req, res) => {
@@ -75,7 +141,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
 // ----------------------------------------------------
 app.get('/api/file/:filename', async (req, res) => {
   const { filename } = req.params;
-  const { lat, lng, forceEdge, mode = 'geo' } = req.query;
+  const { lat, lng, forceEdge, mode = 'geo', width, height, format, quality } = req.query;
 
   const clientLat = parseFloat(lat || '28.6139'); // Default to Delhi coordinates if unspecified
   const clientLng = parseFloat(lng || '77.2090');
@@ -126,7 +192,14 @@ app.get('/api/file/:filename', async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const targetUrl = `${selectedEdge.base_url}/edge/file/${filename}`;
+    // Forward image transformation query parameters to Edge Server
+    const queryParams = new URLSearchParams();
+    if (width) queryParams.append('width', width);
+    if (height) queryParams.append('height', height);
+    if (format) queryParams.append('format', format);
+    if (quality) queryParams.append('quality', quality);
+
+    const targetUrl = `${selectedEdge.base_url}/edge/file/${filename}?${queryParams.toString()}`;
     const edgeResponse = await axios({
       method: 'get',
       url: targetUrl,
@@ -136,13 +209,16 @@ app.get('/api/file/:filename', async (req, res) => {
     const responseTimeMs = Date.now() - startTime;
     const cacheStatusHeader = edgeResponse.headers['x-cache-status'] || 'UNKNOWN';
     const isCacheHit = cacheStatusHeader === 'HIT' ? 1 : 0;
+    const lruEvictedFile = edgeResponse.headers['x-cdn-lru-evicted'] || null;
 
     // Log request analytics to database
+    let newLogId = null;
     try {
-      db.prepare(`
+      const result = db.prepare(`
         INSERT INTO request_logs (user_id, filename, client_lat, client_lng, edge_server_used, cache_hit, response_time_ms, routing_mode)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(userId, filename, clientLat, clientLng, selectedEdge.name, isCacheHit, responseTimeMs, routingStrategy);
+      newLogId = result.lastInsertRowid;
     } catch (logErr) {
       console.error('Request logging failed:', logErr);
     }
@@ -153,9 +229,28 @@ app.get('/api/file/:filename', async (req, res) => {
     res.setHeader('X-CDN-Cache-Status', cacheStatusHeader);
     res.setHeader('X-CDN-Response-Time-MS', responseTimeMs);
     res.setHeader('X-CDN-Routing-Mode', routingStrategy);
+    if (lruEvictedFile) res.setHeader('X-CDN-LRU-Evicted', lruEvictedFile);
+
     if (edgeResponse.headers['content-type']) {
       res.setHeader('Content-Type', edgeResponse.headers['content-type']);
     }
+
+    // Broadcast real-time event via SSE to all active clients
+    broadcastSSE({
+      type: 'REQUEST_LOGGED',
+      log: {
+        id: newLogId,
+        user_name: req.user ? req.user.name : 'Anonymous User',
+        filename,
+        client_lat: clientLat,
+        client_lng: clientLng,
+        edge_server_used: selectedEdge.name,
+        cache_hit: isCacheHit,
+        response_time_ms: responseTimeMs,
+        routing_mode: routingStrategy,
+        created_at: new Date().toISOString()
+      }
+    });
 
     edgeResponse.data.pipe(res);
 
@@ -203,6 +298,7 @@ app.post('/api/origin/upload', authenticateToken, requireAdmin, upload.single('f
       }
     });
 
+    broadcastSSE({ type: 'FILE_UPLOADED', file: originRes.data.file });
     res.status(201).json(originRes.data);
   } catch (err) {
     console.error('Proxy upload to origin failed:', err.response?.data || err.message);
@@ -217,6 +313,7 @@ app.delete('/api/files/:filename', authenticateToken, requireAdmin, async (req, 
     const originRes = await axios.delete(`${ORIGIN_URL}/origin/file/${filename}`, {
       headers: { 'Authorization': req.headers['authorization'] }
     });
+    broadcastSSE({ type: 'FILE_DELETED', filename });
     res.json(originRes.data);
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete file' });
@@ -236,6 +333,8 @@ app.get('/api/edges', async (req, res) => {
         return {
           ...edge,
           status: 'online',
+          max_capacity: edgeRes.data.max_capacity,
+          ttl_minutes: edgeRes.data.ttl_minutes,
           cache_count: edgeRes.data.cache_count,
           cache_entries: edgeRes.data.cache_entries
         };
@@ -243,6 +342,8 @@ app.get('/api/edges', async (req, res) => {
         return {
           ...edge,
           status: 'offline',
+          max_capacity: 5,
+          ttl_minutes: 10,
           cache_count: 0,
           cache_entries: []
         };
@@ -305,11 +406,14 @@ app.post('/api/edges/purge', authenticateToken, requireAdmin, async (req, res) =
   );
 
   await Promise.all(purgePromises);
+  broadcastSSE({ type: 'CACHE_PURGED', edgeName: edgeName || 'ALL' });
   res.json({ message: `Purge command dispatched to ${targetEdges.length} edge server(s)` });
 });
 
 app.listen(PORT, () => {
   console.log(`====================================================`);
   console.log(` [MiniCDN Router & API Gateway] Listening on http://localhost:${PORT}`);
+  console.log(` [WAF Engine] Rate Limiting: ${RATE_LIMIT_MAX} req/min per IP`);
+  console.log(` [SSE Stream] Endpoint ready at GET /api/stream`);
   console.log(`====================================================`);
 });

@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  origin:
+    build: .
+    command: node origin/server.js
+    ports:
+      - "4001:4001"
+    volumes:
+      - ./data:/app/data
+      - ./origin/uploads:/app/origin/uploads
+
+  edge-mumbai:
+    build: .
+    command: node edge/server.js
+    ports:
+      - "4002:4002"
+    environment:
+      - EDGE_NAME=Mumbai
+      - LAT=19.0760
+      - LNG=72.8777
+      - PORT=4002
+      - ORIGIN_URL=http://origin:4001
+      - MAX_CACHE_FILES=5
+      - TTL_MINUTES=10
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - origin
+
+  edge-bangalore:
+    build: .
+    command: node edge/server.js
+    ports:
+      - "4003:4003"
+    environment:
+      - EDGE_NAME=Bangalore
+      - LAT=12.9716
+      - LNG=77.5946
+      - PORT=4003
+      - ORIGIN_URL=http://origin:4001
+      - MAX_CACHE_FILES=5
+      - TTL_MINUTES=10
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - origin
+
+  edge-lucknow:
+    build: .
+    command: node edge/server.js
+    ports:
+      - "4004:4004"
+    environment:
+      - EDGE_NAME=Lucknow
+      - LAT=26.8467
+      - LNG=80.9462
+      - PORT=4004
+      - ORIGIN_URL=http://origin:4001
+      - MAX_CACHE_FILES=5
+      - TTL_MINUTES=10
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - origin
+
+  router:
+    build: .
+    command: node router/server.js
+    ports:
+      - "4000:4000"
+    environment:
+      - ORIGIN_URL=http://origin:4001
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - origin
+      - edge-mumbai
+      - edge-bangalore
+      - edge-lucknow

@@ -52,6 +52,7 @@ export function initDatabase() {
       edge_id INTEGER NOT NULL,
       filename TEXT NOT NULL,
       cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
       expires_at DATETIME,
       hit_count INTEGER DEFAULT 1,
       UNIQUE(edge_id, filename),
@@ -71,6 +72,13 @@ export function initDatabase() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
+  // Migrate existing cache_entries table if last_accessed column is missing
+  try {
+    db.exec(`ALTER TABLE cache_entries ADD COLUMN last_accessed DATETIME`);
+  } catch (err) {
+    // Column already exists
+  }
 
   // Seed default admin user if not exists
   const adminCheck = db.prepare('SELECT id FROM users WHERE email = ?').get('admin@minicdn.com');
